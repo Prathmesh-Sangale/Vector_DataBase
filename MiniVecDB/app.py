@@ -66,12 +66,14 @@ st.markdown(
         font-family: 'Inter', sans-serif;
     }
 
-    /* ── HIDE STREAMLIT TOOLBAR (Deploy button + main menu) ── */
-    #MainMenu { visibility: hidden; display: none; }
-    header[data-testid="stHeader"] { display: none; }
-    div[data-testid="stToolbar"] { display: none; }
-    div[data-testid="stDecoration"] { display: none; }
-    footer { visibility: hidden; display: none; }
+    /* ── HIDE DEPLOY BUTTON ONLY — keep main menu (theme toggle) ── */
+    /* Hide the Deploy button but NOT the three-dots menu */
+    .stAppDeployButton { display: none !important; visibility: hidden !important; }
+    [data-testid="stAppDeployButton"] { display: none !important; visibility: hidden !important; }
+    /* Hide footer "Made with Streamlit" */
+    footer { visibility: hidden !important; display: none !important; }
+    /* Hide the top colour decoration bar */
+    div[data-testid="stDecoration"] { display: none !important; }
 
     /* ── DARK THEME ── */
     [data-theme="dark"] .metric-card {
