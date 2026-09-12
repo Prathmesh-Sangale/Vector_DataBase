@@ -14,50 +14,112 @@
 
 MiniVecDB is an educational, end-to-end vector search engine built from first principles. It demonstrates exactly how modern vector databases work under the hood — covering exact brute-force search, approximate Locality-Sensitive Hashing (LSH) indexing, dynamic CRUD operations, and empirical benchmarking — all packed into an interactive Streamlit dashboard.
 
-**Why build it from scratch?**
-Libraries like FAISS abstract away the most interesting parts. MiniVecDB forces you to confront the real math: hyperplane projections, hash tables, candidate filtering, recall measurement, and the fundamental speed-vs-accuracy tradeoff.
+---
+
+## What is Implemented
+
+Every feature listed below is **fully working** in the current codebase.
+
+### Storage — `src/vector_store.py`
+- In-memory vector store backed by a pre-allocated `float32` NumPy array
+- Dynamic capacity doubling (no fixed size limit)
+- Soft delete via boolean mask — O(1) delete, active vectors always filtered correctly
+- O(1) lookup by Vector ID via `id_to_idx` dictionary
+- `bulk_load()` for loading an entire dataset at once
+- `insert()`, `delete()`, `get()`, `all_vectors()`, `size` property
+
+### Exact Search — `src/exact_search.py`
+- Vectorized squared Euclidean distance: `D²(q, x) = Σ(q_i − x_i)²`
+- Uses `np.einsum` for fast distance reduction across all active vectors
+- `np.argpartition` for O(N) partial sort then exact sort of top-K
+- `batch_exact_search()` for running a full query set — used by the benchmark
+- **100% recall guaranteed** — exhaustively checks every active vector
+
+### Approximate Search — `src/lsh_index.py`
+- Random Hyperplane Locality-Sensitive Hashing (pure NumPy, no external libs)
+- Configurable `num_tables` (T) and `num_bits` (B) per table
+- Build phase: projects all vectors against random Gaussian hyperplanes `H ∈ ℝ^(dim × B)`, stores binary hash keys
+- Query phase: hashes query in each of T tables, takes union of candidate indices, runs exact distance on candidates only
+- `candidate_count()` method — reports how many vectors were actually examined
+- `rebuild()` — fast rebuild after insert/delete
+- Tunable speed-vs-accuracy knob: `num_tables ↑ → recall ↑, QPS ↓` / `num_bits ↑ → QPS ↑, recall ↓`
+
+### Benchmark Engine — `src/benchmark.py`
+- Sweeps **4 preset configurations**: Fast (2T/10B), Balanced (4T/8B), Accurate (8T/6B), Max (16T/4B)
+- Computes **Recall@K**: `|exact_top_K ∩ approx_top_K| / K` per query, averaged over the full query set
+- Computes **QPS** (Queries Per Second) using `time.perf_counter`
+- Tracks **Avg Candidates** examined per query — explains *why* QPS varies
+- Tracks **build_time_s** for each index configuration
+- Produces a **Pareto scatter plot** (Recall@K vs QPS) with config labels and a tradeoff curve
+- Plot supports **dark and light mode** rendering
+- Saves plot to `results/benchmark.png`; also returns `matplotlib.Figure` for Streamlit display
+- **Download button** for the benchmark plot PNG
+
+### Datasets — `data/generate_data.py`
+- `generate_clustered_vectors(n, dim, n_clusters)` — Gaussian clusters drawn from random centroids; realistic ANN geometry
+- `generate_random_vectors(n, dim)` — pure Gaussian noise; worst case for LSH
+- `generate_query_set(vectors, n_queries)` — samples rows from the dataset as held-out queries; guarantees exact ground-truth answers exist
+- Configurable: 1,000 – 50,000 vectors, dimensions 32 / 64 / 128
+
+### Streamlit Dashboard — `app.py`
+
+**Sidebar:**
+- Number of vectors slider (1K – 50K)
+- Dimension selector (32, 64, 128)
+- Data mode: Clustered or Random
+- Query set size slider
+- Hash Tables (T) and Hash Bits (B) sliders
+- 3 Quick Preset buttons: ⚡ Fast, ⚖️ Balanced, 🎯 Accurate
+- "Generate Dataset" button with spinner feedback
+
+**🔍 Search Tab:**
+- Query by Vector ID
+- Choose method: `Exact`, `LSH`, or `Both (compare)`
+- Color-coded results table (amber = Exact, green = LSH)
+- Shows squared distances and rank for each result
+- In `Both` mode: shows live **Recall@K for this single query**
+- Shows candidate count examined by LSH (`764 / 10,000` style)
+
+**📊 Benchmark Tab:**
+- "Run Full Benchmark" button with live progress bar
+- Side-by-side: results table + Pareto tradeoff scatter plot
+- Table shows: Config, Tables, Bits, Recall@K, QPS, Avg Candidates
+- Download PNG button
+
+**✏️ CRUD Tab:**
+- Insert: enter a Vector ID, auto-generate a random vector or enter values manually (comma-separated floats)
+- Delete: enter a Vector ID to soft-delete
+- Both operations auto-rebuild the LSH index after completion
+- Operation log showing the last 10 inserts/deletes with timestamps
+
+**ℹ️ About Tab:**
+- Explains exact search, LSH build/search algorithm, speed-vs-accuracy knob, Recall@K formula, and CRUD mechanics
 
 ---
 
-## Features
+## What is NOT Implemented (Simplified for MVP)
 
-| Feature | Description |
-|---|---|
-| **Exact Nearest Neighbor Search** | Vectorized squared Euclidean distance over all active vectors — guaranteed 100% recall |
-| **Approximate LSH Search** | Random Hyperplane projection with multi-table hashing — sub-linear query time |
-| **Speed vs Accuracy Control** | Tune `num_tables` and `num_bits` to control the recall/QPS tradeoff |
-| **CRUD Operations** | Insert, delete, and search vectors dynamically with automatic index updates |
-| **Benchmark Suite** | Sweeps 4 index configurations, measures Recall@K and QPS, plots a Pareto curve |
-| **Dual Dataset Support** | 50D synthetic clustered vectors *and* real 384D text embeddings (all-MiniLM-L6-v2) |
-| **Interactive Dashboard** | Streamlit web app with 4 tabs: Search, CRUD, Benchmark, About |
-| **Dark / Light Mode** | Full theme-aware UI via Streamlit |
+| Feature | Current Behavior | What a Production System Would Do |
+|---|---|---|
+| **Data persistence** | All vectors are in-memory; lost on restart | Persist to `.npy` or a database |
+| **Text / semantic search** | Query by Vector ID only; no text-to-embedding pipeline | Use `sentence-transformers` to embed queries |
+| **Metadata per vector** | Not stored | Attach document text, tags, timestamps per vector |
+| **Dynamic index delete** | Full LSH index rebuilt after every delete | Tombstoning or HNSW dynamic deletion |
+| **Concurrent access** | Single-user Streamlit session | Thread-safe connection pooling |
+| **Real embeddings dataset** | Synthetic Gaussian vectors only | Load real text/image embeddings |
 
 ---
 
 ## Quick Start
 
-### 1. Clone the Repository
-
 ```bash
 git clone https://github.com/Prathmesh-Sangale/Vector_DataBase.git
 cd Vector_DataBase
-```
-
-### 2. Install Dependencies
-
-```bash
 pip install -r requirements.txt
-```
-
-> **Requirements:** `numpy>=1.26`, `streamlit>=1.35`, `matplotlib>=3.8`, `pandas>=2.1`
-
-### 3. Run the App
-
-```bash
 streamlit run app.py
 ```
 
-Then open **[http://localhost:8501](http://localhost:8501)** in your browser.
+Open **[http://localhost:8501](http://localhost:8501)** in your browser.
 
 ---
 
@@ -65,161 +127,85 @@ Then open **[http://localhost:8501](http://localhost:8501)** in your browser.
 
 ```
 MiniVecDB/
-├── app.py                    # Streamlit dashboard — UI and tab routing
-├── requirements.txt          # Python dependencies
+├── app.py                    # Streamlit dashboard (all 4 tabs + sidebar)
+├── requirements.txt          # numpy, streamlit, matplotlib, pandas
 ├── README.md
 ├── .streamlit/
-│   └── config.toml           # Streamlit theme config (hides toolbar)
+│   └── config.toml           # Hides deploy toolbar
 ├── src/
-│   ├── vector_store.py       # In-memory CRUD storage (float32 NumPy array)
-│   ├── exact_search.py       # Brute-force ground-truth search (vectorized L2)
-│   ├── lsh_index.py          # Random Hyperplane LSH index (pure NumPy)
-│   └── benchmark.py          # Recall@K and QPS measurement engine
+│   ├── vector_store.py       # In-memory CRUD: float32 array + soft-delete mask
+│   ├── exact_search.py       # Brute-force L2 search + batch variant
+│   ├── lsh_index.py          # Random Hyperplane LSH: build, search, rebuild
+│   └── benchmark.py          # Recall@K + QPS sweep + Pareto plot
 ├── data/
-│   └── generate_data.py      # Synthetic clustered + random vector generation
+│   └── generate_data.py      # Clustered, random, and query-set generators
 └── results/
-    └── benchmark.png         # Auto-generated benchmark plot
+    └── benchmark.png         # Auto-generated by benchmark tab
 ```
 
 ---
 
-## How It Works
+## How to Use It
 
-### 1. VectorStore (`src/vector_store.py`)
+### 1. Generate a Dataset
+Open the sidebar, pick your vector count and dimension, choose **Clustered** or **Random**, and click **Generate Dataset**. The VectorStore loads instantly and the LSH index is built.
 
-The central storage layer. Vectors are held in a pre-allocated `float32` NumPy array with a parallel boolean mask (`_active`) for O(1) soft deletes. An `id_to_idx` dictionary provides O(1) lookup by vector ID.
+### 2. Search
+Go to the **🔍 Search** tab, enter any Vector ID (0 to N−1), pick a method, and click Search. Use `Both (compare)` to see exact vs LSH side-by-side and the per-query Recall@K.
 
-```python
-store = VectorStore(dimension=128)
-store.insert(vector_id=42, vector=np.random.rand(128).astype(np.float32))
-store.delete(vector_id=42)
-vectors, ids = store.all_vectors()  # returns only active (non-deleted) vectors
-```
+### 3. Benchmark
+Click **▶ Run Full Benchmark** in the **📊 Benchmark** tab. The engine sweeps all 4 configs over your full query set and renders the Pareto curve.
 
-**Key design decisions:**
-- **Soft deletes**: Deletion flips a boolean flag instead of compacting the array — O(1) delete, O(N) `all_vectors()`
-- **Dynamic capacity growth**: Internal buffer doubles when capacity is exhausted
-- **Automatic index rebuild**: After insert or delete, the LSH index is invalidated and rebuilt from the active set
+### 4. CRUD
+In the **✏️ CRUD** tab, insert a new vector (auto-generated or manually entered) or delete any existing one by ID. The operation log tracks every change.
 
 ---
 
-### 2. Exact Search (`src/exact_search.py`)
+## Architecture — How It Works
 
-Computes the squared Euclidean distance between a query vector and **every** stored vector using NumPy broadcasting:
-
+### Exact Search
 ```
-D²(q, xᵢ) = Σⱼ (xᵢⱼ - qⱼ)²
+D²(q, xᵢ) = Σⱼ (xᵢⱼ − qⱼ)²
+top-K = argsort(D²)[:k]
+```
+Scans all N vectors. Guaranteed correct. Used as ground truth for Recall@K.
+
+### LSH Index — Build
+```
+For each table t in T:
+    H ~ N(0,1)^(dim × B)         # random hyperplanes
+    bits = (vectors @ H) > 0      # (N, B) bool
+    key  = bits.tobytes()          # compact hash key
+    tables[t][key].append(idx)
 ```
 
-Top-K results are extracted with `np.argpartition` (O(N)) followed by a sort of K candidates. This is the **ground-truth baseline** — it always returns the mathematically correct answer, which is used to compute Recall@K for the LSH index.
+### LSH Index — Query
+```
+candidates = ∅
+For each table t:
+    key = ((query @ H_t) > 0).tobytes()
+    candidates ∪= tables[t][key]
+
+Compute exact D² for candidates only → return top-K
+```
+
+### Recall@K
+```
+Recall@K = |exact_top_K ∩ approx_top_K| / K
+```
+Averaged over the full query set. A curve across configs, not just a single number.
 
 ---
 
-### 3. LSH Index (`src/lsh_index.py`)
+## Tech Stack
 
-Random Hyperplane Locality-Sensitive Hashing — the core approximate index.
-
-**Build phase** (for each of `T` independent hash tables):
-1. Sample `B` random hyperplane normals: `H ∈ ℝ^(dim × B)` from `N(0, 1)`
-2. Project all `N` vectors: `projections = vectors @ H` → shape `(N, B)`
-3. Convert to binary signature: `bits = projections > 0` → shape `(N, B)` bool
-4. Store each vector's index in `table[bits.tobytes()]`
-
-**Query phase:**
-1. Hash the query using each of the `T` tables → collect candidate indices from matching buckets
-2. Take the **union** across all `T` tables (deduplicating collisions)
-3. Run **exact** squared-distance on the small candidate set only
-4. Return top-K from candidates
-
-**Tuning the tradeoff:**
-
-| Parameter | Effect |
+| Component | Library |
 |---|---|
-| `num_tables` ↑ | More candidates, higher recall, lower QPS |
-| `num_bits` ↑ | Smaller buckets, fewer candidates, lower recall, higher QPS |
-| `num_bits` ↓ | Larger buckets, more candidates, higher recall, lower QPS |
-
-```python
-lsh = LSHIndex(dimension=50, num_tables=8, num_bits=12)
-lsh.build(vectors, ids)
-results = lsh.search(query, k=10)  # returns [(id, sq_distance), ...]
-```
-
----
-
-### 4. Benchmark Engine (`src/benchmark.py`)
-
-Automatically sweeps 4 LSH configurations, runs 100 random test queries per config, and computes:
-
-- **Recall@K**: Fraction of true top-K neighbors (from exact search) found by LSH
-- **QPS (Queries Per Second)**: Throughput measured with Python's `time.perf_counter`
-- **Avg Candidates**: Average candidate pool size per query (measures filtering efficiency)
-
-**Preset configurations:**
-
-| Config | Tables | Bits | Expected Recall@5 | Expected QPS |
-|---|---|---|---|---|
-| Fast | 4 | 8 | ~65% | ~4,200 |
-| Balanced | 8 | 12 | ~82% | ~2,500 |
-| Accurate | 16 | 16 | ~94% | ~1,200 |
-| Max | 24 | 16 | ~98% | ~850 |
-
-> *Results vary by dataset size, dimensionality, and hardware. Run the benchmark tab to see real numbers.*
-
----
-
-## Dashboard Tabs
-
-### 🔍 Vector Search
-- Load either the **50D synthetic dataset** (20-cluster Gaussian, 10,000 vectors) or the **384D real text corpus** (all-MiniLM-L6-v2 embeddings)
-- Enter a query ID or free-text query sentence
-- Compare **Exact L2** results vs **Approximate LSH** results side-by-side
-- View per-query latency (ms), Euclidean distances, matched metadata, and candidate count
-
-### ✏️ CRUD Operations
-- **Insert**: Add a new vector to the live database — the LSH index auto-rebuilds
-- **Delete**: Remove any vector by ID — soft-deleted, index auto-rebuilds
-- View live database statistics (total active vectors, dimensionality, index status)
-
-### 📊 Benchmark
-- Run the full 4-config benchmark suite with progress bar
-- View the dynamic **Pareto tradeoff scatter plot** (Recall@K vs QPS)
-- Review the detailed comparison table for all configurations
-
-### ℹ️ About
-- Project overview, mathematical formulations, and architecture explanation
-- LSH hyperplane projection diagrams and parameter descriptions
-
----
-
-## Datasets
-
-### Synthetic Clustered Vectors (50D)
-Generated in `data/generate_data.py`. Creates 10,000 vectors drawn from 20 Gaussian cluster centres in 50D space. The cluster geometry produces realistic nearest-neighbor structure for demonstrating the LSH tradeoff.
-
-### Real Text Embeddings (384D)
-Encodes a curated English text corpus using the `all-MiniLM-L6-v2` sentence transformer model. These are real semantic embeddings — searching for "machine learning" will return semantically similar sentences, not just string matches.
-
----
-
-## Design Choices & Limitations
-
-| Decision | Reason |
-|---|---|
-| **Soft deletes** (boolean mask) | O(1) delete; trade-off: `all_vectors()` scans masked rows |
-| **Full index rebuild on mutation** | Safe and correct for an MVP; a production system would use dynamic deletion or an HNSW structure |
-| **In-memory only** | Data is lost on restart; persistence via `.npy` save/load is a straightforward extension |
-| **No external vector libs** | Educational goal — every line of search logic is visible and readable |
-
----
-
-## Future Extensions
-
-- [ ] **HNSW Index** — Hierarchical Navigable Small World graphs for even better recall/speed tradeoffs
-- [ ] **Persistent storage** — Save/load vectors and index to disk with NumPy `.npy` files
-- [ ] **2D PCA visualization** — Plot vectors and highlight search results spatially
-- [ ] **Dynamic LSH deletion** — Remove vectors without full index rebuild
-- [ ] **Batch query support** — Process multiple queries simultaneously with matrix operations
+| Linear algebra / storage | NumPy |
+| Dashboard | Streamlit |
+| Benchmark plots | Matplotlib |
+| Results tables | Pandas |
+| Language | Python 3.11+ |
 
 ---
 
@@ -231,5 +217,5 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Author
 
-**Prathmesh Sangale**
+**Prathmesh Sangale**  
 [GitHub →](https://github.com/Prathmesh-Sangale/Vector_DataBase)
